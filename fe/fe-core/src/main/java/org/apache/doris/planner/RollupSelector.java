@@ -22,13 +22,16 @@ import org.apache.doris.analysis.Analyzer;
 import org.apache.doris.analysis.BinaryPredicate;
 import org.apache.doris.analysis.CastExpr;
 import org.apache.doris.analysis.Expr;
+import org.apache.doris.analysis.FunctionCallExpr;
 import org.apache.doris.analysis.InPredicate;
 import org.apache.doris.analysis.SlotDescriptor;
 import org.apache.doris.analysis.SlotRef;
 import org.apache.doris.analysis.TupleDescriptor;
+import org.apache.doris.catalog.AggregateType;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.MaterializedIndex;
 import org.apache.doris.catalog.OlapTable;
+import org.apache.doris.common.Config;
 import org.apache.doris.common.UserException;
 import org.apache.doris.qe.ConnectContext;
 
@@ -38,11 +41,14 @@ import com.google.common.collect.Sets;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.springframework.util.StringUtils;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 
@@ -53,11 +59,15 @@ public final class RollupSelector {
     private final TupleDescriptor tupleDesc;
     private final OlapTable table;
     private final Analyzer analyzer;
+    List<FunctionCallExpr> functionCallExprs;
+    private final OlapScanNode olapScanNode;
 
-    public RollupSelector(Analyzer analyzer, TupleDescriptor tupleDesc, OlapTable table) {
+    public RollupSelector(Analyzer analyzer, TupleDescriptor tupleDesc, OlapTable table, List<FunctionCallExpr> functionCallExprs, OlapScanNode olapScanNode) {
         this.analyzer = analyzer;
         this.tupleDesc = tupleDesc;
         this.table = table;
+        this.functionCallExprs = functionCallExprs;
+        this.olapScanNode = olapScanNode;
     }
 
     public long selectBestRollup(
@@ -76,7 +86,7 @@ public final class RollupSelector {
             }
         }
         // Get first partition to select best prefix index rollups, because MaterializedIndex ids in one rollup's partitions are all same.
-        final List<Long> bestPrefixIndexRollups = selectBestPrefixIndexRollup(conjuncts, isPreAggregation);
+        final List<Long> bestPrefixIndexRollups = selectBestPrefixIndexRollup(partitionIds, conjuncts, isPreAggregation);
         return selectBestRowCountRollup(bestPrefixIndexRollups, partitionIds);
     }
 
@@ -114,12 +124,14 @@ public final class RollupSelector {
         return selectedIndexId;
     }
 
-    private List<Long> selectBestPrefixIndexRollup(List<Expr> conjuncts, boolean isPreAggregation) throws UserException {
+    private List<Long> selectBestPrefixIndexRollup(Collection<Long> partitionIds, List<Expr> conjuncts, boolean isPreAggregation) throws UserException {
 
-        final List<String> outputColumns = Lists.newArrayList();
+        final List<String> outputColumnNames = Lists.newArrayList();
+        final List<Column> outputColumns = Lists.newArrayList();
         for (SlotDescriptor slot : tupleDesc.getMaterializedSlots()) {
             Column col = slot.getColumn();
-            outputColumns.add(col.getName());
+            outputColumns.add(col);
+            outputColumnNames.add(col.getName());
         }
 
         final List<MaterializedIndex> rollups = table.getVisibleIndex();
@@ -129,11 +141,14 @@ public final class RollupSelector {
         final List<MaterializedIndex> rollupsContainsOutput = Lists.newArrayList();
         final List<Column> baseTableColumns = table.getKeyColumnsByIndexId(table.getBaseIndexId());
         for (MaterializedIndex rollup : rollups) {
-            final Set<String> rollupColumns = Sets.newHashSet();
-            table.getSchemaByIndexId(rollup.getId(), true)
-                    .stream().forEach(column -> rollupColumns.add(column.getName()));
+            final Set<Column> rollupColumns = Sets.newHashSet();
+            final Set<String> rollupColumnNames = Sets.newHashSet();
+            for (Column column : table.getSchemaByIndexId(rollup.getId(), true)) {
+                rollupColumns.add(column);
+                rollupColumnNames.add(column.getName());
+            }
 
-            if (rollupColumns.containsAll(outputColumns)) {
+            if (rollupColumnNames.containsAll(outputColumnNames)) {
                 // If preAggregation is off, so that we only can use base table
                 // or those rollup tables which key columns is the same with base table
                 // (often in different order)
@@ -145,6 +160,11 @@ public final class RollupSelector {
                     LOG.debug("preAggregation is off, but index {} have same key columns with base index.",
                             rollup.getId());
                     rollupsContainsOutput.add(rollup);
+                } else if (Config.enable_unique_agg) {
+                    if (aggFuncAllMatch(rollupColumns, outputColumnNames) && partitionsAllValid(partitionIds)) {
+                        rollupsContainsOutput.add(rollup);
+                        olapScanNode.setIsPreAggregation(true, null);
+                    }
                 }
             } else {
                 LOG.debug("exclude index {} because it does not contain all output columns", rollup.getId());
@@ -176,6 +196,29 @@ public final class RollupSelector {
             }
         });
         return rollupsMatchingBestPrefixIndex;
+    }
+
+    private boolean aggFuncAllMatch(Set<Column> rollupColumns, List<String> outputColumnNames) {
+        Map<String, String> colName2FuncName = new HashMap<>();
+        for (Column column : rollupColumns) {
+            AggregateType aggregateType = column.getAggregationType();
+
+            colName2FuncName.put(column.getName(), aggregateType == null ? null :aggregateType.toString());
+        }
+        for (FunctionCallExpr functionCallExpr : functionCallExprs) {
+            CastExpr castExpr = (CastExpr) functionCallExpr.getChild(0);
+            SlotRef slotRef = (SlotRef) castExpr.getChild(0);
+            String funcName = functionCallExpr.getFnName().getFunction();
+            String name = slotRef.getColumnName();
+            if (!funcName.equalsIgnoreCase(colName2FuncName.get(name))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean partitionsAllValid(Collection<Long> partitionIds) {
+        return true;
     }
 
     private void matchPrefixIndex(List<MaterializedIndex> candidateRollups,

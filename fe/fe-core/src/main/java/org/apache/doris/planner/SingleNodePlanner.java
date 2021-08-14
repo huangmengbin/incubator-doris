@@ -535,6 +535,7 @@ public class SingleNodePlanner {
                 for (Column col : returnColumns) {
                     // TODO(zc): Here column is null is too bad
                     // Only column of Inline-view will be null
+                    // 这只是base表中的 col，即使它是replace，也有可能：某个物化视图中存在相应的AggregateType
                     if (col == null) {
                         continue;
                     }
@@ -791,9 +792,10 @@ public class SingleNodePlanner {
                     continue;
                 }
                 // select index by the old Rollup selector
-                olapScanNode.selectBestRollupByRollupSelector(analyzer);
+                olapScanNode.selectBestRollupByRollupSelector(analyzer, selectStmt.getAggInfo() == null ? null : selectStmt.getAggInfo().getAggregateExprs());
                 // select index by the new Materialized selector
                 MaterializedViewSelector.BestIndexInfo bestIndexInfo = materializedViewSelector.selectBestMV(olapScanNode);
+                // todo 二者为啥会不一致？？？为啥要算两次？
                 if (bestIndexInfo == null) {
                     selectFailed |= true;
                     TupleId tupleId = olapScanNode.getTupleId();

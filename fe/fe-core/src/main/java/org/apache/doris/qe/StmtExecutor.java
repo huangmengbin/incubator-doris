@@ -342,6 +342,7 @@ public class StmtExecutor implements ProfileWriter {
             } else if (parsedStmt instanceof KillStmt) {
                 handleKill();
             } else if (parsedStmt instanceof ExportStmt) {
+
                 handleExportStmt();
             } else if (parsedStmt instanceof UnsupportedStmt) {
                 handleUnsupportedStmt();

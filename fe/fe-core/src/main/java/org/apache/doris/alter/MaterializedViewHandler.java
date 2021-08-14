@@ -198,7 +198,7 @@ public class MaterializedViewHandler extends AlterHandler {
 
             long baseIndexId = checkAndGetBaseIndex(baseIndexName, olapTable);
             // Step1.3: mv clause validation
-            List<Column> mvColumns = checkAndPrepareMaterializedView(addMVClause, olapTable);
+            List<Column> mvColumns = checkAndPrepareMaterializedView(addMVClause, olapTable);//
 
             // Step2: create mv job
             RollupJobV2 rollupJobV2 = createMaterializedViewJob(mvIndexName, baseIndexName, mvColumns, addMVClause
@@ -286,7 +286,7 @@ public class MaterializedViewHandler extends AlterHandler {
             olapTable.setState(OlapTableState.ROLLUP);
             // 2 batch submit rollup job
             List<AlterJobV2> rollupJobV2List = new ArrayList<>(rollupNameJobMap.values());
-            batchAddAlterJobV2(rollupJobV2List);
+            batchAddAlterJobV2(rollupJobV2List);//
 
             BatchAlterJobPersistInfo batchAlterJobV2 = new BatchAlterJobPersistInfo(rollupJobV2List);
             Catalog.getCurrentCatalog().getEditLog().logBatchAlterJob(batchAlterJobV2);
@@ -322,6 +322,7 @@ public class MaterializedViewHandler extends AlterHandler {
      * @throws DdlException
      * @throws AnalysisException
      */
+
     private RollupJobV2 createMaterializedViewJob(String mvName, String baseIndexName,
             List<Column> mvColumns, Map<String, String> properties, OlapTable
             olapTable, Database db, long baseIndexId, KeysType mvKeysType, OriginStatement origStmt)
@@ -464,19 +465,31 @@ public class MaterializedViewHandler extends AlterHandler {
                 if (baseColumn.isKey() && !mvColumnItem.isKey()) {
                     throw new DdlException("The column[" + mvColumnName + "] must be the key of materialized view");
                 }
-                if (baseAggregationType != mvAggregationType) {
-                    throw new DdlException(
-                            "The aggregation type of column[" + mvColumnName + "] must be same as the aggregate " +
-                                    "type of base column in aggregate table");
-                }
-                if (baseAggregationType != null && baseAggregationType.isReplaceFamily() && olapTable
-                        .getKeysNum() != numOfKeys) {
-                    throw new DdlException(
-                            "The materialized view should contain all keys of base table if there is a" + " REPLACE "
-                                    + "value");
+                if (Config.enable_unique_agg && baseAggregationType != null && baseAggregationType.isReplaceFamily() &&
+                    (mvAggregationType == AggregateType.MAX || mvAggregationType == AggregateType.MIN
+                            || mvAggregationType == AggregateType.SUM)
+                ) {
+                    // todo 数量相同，且仍属于AggregationFamily 真的会毫无意义吗？
+                    if (olapTable.getKeysNum() == numOfKeys) {
+                        throw new DdlException(
+                            "The materialized view should not contain all keys of base table if there is a REPLACE "
+                                + "value and a AGGREGATE value");
+                    }
+                } else {
+                    if (baseAggregationType != mvAggregationType) {
+                        throw new DdlException(
+                                "The aggregation type of column[" + mvColumnName + "] must be same as the aggregate " +
+                                        "type of base column in aggregate table");
+                    }
+                    if (baseAggregationType != null && baseAggregationType.isReplaceFamily() && olapTable
+                            .getKeysNum() != numOfKeys) {
+                        throw new DdlException(
+                                "The materialized view should contain all keys of base table if there is a" + " REPLACE "
+                                        + "value");
+                    }
                 }
                 newMVColumns.add(mvColumnItem.toMVColumn(olapTable));
-            }
+            } // end for [ MVColumnItem mvColumnItem : mvColumnItemList ]
         } else {
             Set<String> partitionOrDistributedColumnName = olapTable.getPartitionColumnNames();
             partitionOrDistributedColumnName.addAll(olapTable.getDistributionColumnNames());
@@ -563,6 +576,7 @@ public class MaterializedViewHandler extends AlterHandler {
                 // rollup of unique key table or rollup with REPLACE value
                 // should have all keys of base table
                 if (keysNumOfRollup != olapTable.getKeysNum()) {
+                    // throws
                     if (KeysType.UNIQUE_KEYS == keysType) {
                         throw new DdlException("Rollup should contains all unique keys in basetable");
                     } else {
@@ -677,6 +691,7 @@ public class MaterializedViewHandler extends AlterHandler {
                         oneColumn.setIsKey(false);
                         oneColumn.setAggregationType(AggregateType.NONE, true);
                     }
+                    // new column
                     rollupSchema.add(oneColumn);
                 }
             }

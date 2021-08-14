@@ -22,6 +22,7 @@ import org.apache.doris.analysis.BaseTableRef;
 import org.apache.doris.analysis.BinaryPredicate;
 import org.apache.doris.analysis.CastExpr;
 import org.apache.doris.analysis.Expr;
+import org.apache.doris.analysis.FunctionCallExpr;
 import org.apache.doris.analysis.InPredicate;
 import org.apache.doris.analysis.IntLiteral;
 import org.apache.doris.analysis.PartitionNames;
@@ -492,7 +493,7 @@ public class OlapScanNode extends ScanNode {
                 (System.currentTimeMillis() - start), selectedPartitionIds);
     }
 
-    public void selectBestRollupByRollupSelector(Analyzer analyzer) throws UserException {
+    public void selectBestRollupByRollupSelector(Analyzer analyzer, List<FunctionCallExpr> functionCallExprs) throws UserException {
         // Step2: select best rollup
         long start = System.currentTimeMillis();
         if (olapTable.getKeysType() == KeysType.DUP_KEYS) {
@@ -503,7 +504,7 @@ public class OlapScanNode extends ScanNode {
             LOG.debug("The best index will be selected later in mv selector");
             return;
         }
-        final RollupSelector rollupSelector = new RollupSelector(analyzer, desc, olapTable);
+        final RollupSelector rollupSelector = new RollupSelector(analyzer, desc, olapTable, functionCallExprs == null ? Lists.newArrayList() : functionCallExprs, this);
         selectedIndexId = rollupSelector.selectBestRollup(selectedPartitionIds, conjuncts, isPreAggregation);
         LOG.debug("select best roll up cost: {} ms, best index id: {}",
                 (System.currentTimeMillis() - start), selectedIndexId);
